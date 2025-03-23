@@ -4,9 +4,10 @@ import { MicVAD } from '@ricky0123/vad-web'
 interface UseVADProps {
   onSpeechStart?: () => void
   onSpeechEnd?: () => void
+  onAudioData?: (audio: Float32Array) => void
 }
 
-export const useVAD = ({ onSpeechStart, onSpeechEnd }: UseVADProps = {}) => {
+export const useVAD = ({ onSpeechStart, onSpeechEnd, onAudioData }: UseVADProps = {}) => {
   const [isLoading, setIsLoading] = useState(false)
   const [isListening, setIsListening] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -42,7 +43,8 @@ export const useVAD = ({ onSpeechStart, onSpeechEnd }: UseVADProps = {}) => {
             onSpeechStart?.()
           },
           onSpeechEnd: (audio: Float32Array) => {
-            console.log('Speech ended')
+            console.log('Speech ended, audio length:', audio.length)
+            onAudioData?.(audio)
             onSpeechEnd?.()
           }
         })
@@ -59,7 +61,7 @@ export const useVAD = ({ onSpeechStart, onSpeechEnd }: UseVADProps = {}) => {
         vad.pause()
       }
     }
-  }, [onSpeechStart, onSpeechEnd])
+  }, [onSpeechStart, onSpeechEnd, onAudioData])
 
   return {
     isLoading,
