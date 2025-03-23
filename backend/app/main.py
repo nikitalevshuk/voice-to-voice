@@ -5,7 +5,9 @@ import logging
 from datetime import datetime
 from backend.app.core.speech import SpeechToText
 from backend.app.core.llm import LLMProcessor
+from backend.app.core.tts import TTSProcessor
 import os
+import io
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,6 +31,7 @@ app.add_middleware(
 api_key = os.getenv("OPENAI_API_KEY")
 speech_to_text = SpeechToText(api_key=api_key)
 llm_processor = LLMProcessor(api_key=api_key)
+tts_processor = TTSProcessor(api_key=api_key)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -63,13 +66,70 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     # Отправляем текст в LLM
                     llm_response = await llm_processor.process_text(text)
+                    logger.info(f"Ответ LLM: {llm_response}")
                     
-                    # Отправляем результат клиенту
+                    # Отправляем подтверждение клиенту о начале генерации аудио
                     await websocket.send_json({
-                        "status": "success",
+                        "status": "processing",
                         "type": "conversation",
                         "user_text": text,
                         "assistant_text": llm_response
+                    })
+                    
+                    # Группируем чанки для более плавного воспроизведения
+                    CHUNK_GROUP_SIZE = 25  # Увеличиваем размер группы с 5 до 15 чанков
+                    chunk_counter = 0
+                    current_group = []
+                    
+                    async for audio_chunk in tts_processor.text_to_speech_stream(llm_response):
+                        current_group.append(audio_chunk)
+                        
+                        # Когда накопили достаточно чанков, отправляем их как один большой чанк
+                        if len(current_group) >= CHUNK_GROUP_SIZE:
+                            chunk_counter += 1
+                            # Объединяем все чанки в один
+                            combined_chunk = b''.join(current_group)
+                            chunk_size = len(combined_chunk)
+                            
+                            logger.info(f"Отправка сгруппированного аудио чанка #{chunk_counter}, "
+                                      f"размер: {chunk_size} байт (объединено {len(current_group)} маленьких чанков)")
+                            
+                            # Отправляем информацию о чанке
+                            await websocket.send_json({
+                                "status": "streaming",
+                                "type": "audio_stream",
+                                "chunk_number": chunk_counter,
+                                "chunk_size": chunk_size
+                            })
+                            
+                            # Отправляем объединенный чанк
+                            await websocket.send_bytes(combined_chunk)
+                            current_group = []  # Очищаем группу
+                    
+                    # Отправляем оставшиеся чанки, если они есть
+                    if current_group:
+                        chunk_counter += 1
+                        combined_chunk = b''.join(current_group)
+                        chunk_size = len(combined_chunk)
+                        
+                        logger.info(f"Отправка финального сгруппированного чанка #{chunk_counter}, "
+                                  f"размер: {chunk_size} байт (объединено {len(current_group)} маленьких чанков)")
+                        
+                        await websocket.send_json({
+                            "status": "streaming",
+                            "type": "audio_stream",
+                            "chunk_number": chunk_counter,
+                            "chunk_size": chunk_size
+                        })
+                        
+                        await websocket.send_bytes(combined_chunk)
+                    
+                    # Отправляем сигнал о завершении аудио
+                    logger.info(f"Стриминг аудио завершен, отправлено {chunk_counter} сгруппированных чанков")
+                    await websocket.send_json({
+                        "status": "complete",
+                        "type": "audio_stream",
+                        "total_chunks": chunk_counter
                     })
                     
             except Exception as e:
