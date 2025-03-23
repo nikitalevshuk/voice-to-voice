@@ -4,6 +4,7 @@ import numpy as np
 import logging
 from datetime import datetime
 from backend.app.core.speech import SpeechToText
+from backend.app.core.llm import LLMProcessor
 import os
 
 # Настройка логирования
@@ -24,8 +25,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Инициализация Speech-to-Text
-speech_to_text = SpeechToText(api_key=os.getenv("OPENAI_API_KEY"))
+# Инициализация сервисов
+api_key = os.getenv("OPENAI_API_KEY")
+speech_to_text = SpeechToText(api_key=api_key)
+llm_processor = LLMProcessor(api_key=api_key)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -51,20 +54,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 f"  - Длительность: {len(audio_array)/16000:.2f}с"
             )
             
-            # Обрабатываем аудио через Speech-to-Text
             try:
+                # Преобразуем аудио в текст
                 text = await speech_to_text.convert_audio_to_text(audio_array)
+                
                 if text.strip():  # Если есть распознанный текст
+                    logger.info(f"Распознанный текст: {text}")
+                    
+                    # Отправляем текст в LLM
+                    llm_response = await llm_processor.process_text(text)
+                    
+                    # Отправляем результат клиенту
                     await websocket.send_json({
                         "status": "success",
-                        "type": "transcription",
-                        "text": text,
+                        "type": "conversation",
+                        "user_text": text,
+                        "assistant_text": llm_response
                     })
+                    
             except Exception as e:
-                logger.error(f"Ошибка при распознавании речи: {str(e)}")
+                logger.error(f"Ошибка при обработке: {str(e)}")
                 await websocket.send_json({
                     "status": "error",
-                    "type": "transcription",
+                    "type": "processing",
                     "error": str(e)
                 })
             
