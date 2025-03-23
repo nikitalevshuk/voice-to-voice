@@ -1,6 +1,17 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
+import logging
+from datetime import datetime
+from backend.app.core.speech import SpeechToText
+import os
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -13,9 +24,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Инициализация Speech-to-Text
+speech_to_text = SpeechToText(api_key=os.getenv("OPENAI_API_KEY"))
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    client_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger.info(f"Новое WebSocket подключение. ID клиента: {client_id}")
+    
     await websocket.accept()
+    logger.info(f"Клиент {client_id}: соединение установлено")
+    
     try:
         while True:
             # Получаем бинарные данные
@@ -24,16 +43,35 @@ async def websocket_endpoint(websocket: WebSocket):
             # Преобразуем байты обратно в float32 массив
             audio_array = np.frombuffer(data, dtype=np.float32)
             
-            # Здесь будет ваша логика обработки аудио
-            # Пока что просто отправляем подтверждение
-            await websocket.send_json({
-                "status": "success",
-                "message": f"Получено {len(audio_array)} сэмплов аудио"
-            })
+            # Логируем информацию о полученных данных
+            logger.info(
+                f"Клиент {client_id}: получены аудио данные\n"
+                f"  - Размер данных: {len(data)} байт\n"
+                f"  - Количество сэмплов: {len(audio_array)}\n"
+                f"  - Длительность: {len(audio_array)/16000:.2f}с"
+            )
+            
+            # Обрабатываем аудио через Speech-to-Text
+            try:
+                text = await speech_to_text.convert_audio_to_text(audio_array)
+                if text.strip():  # Если есть распознанный текст
+                    await websocket.send_json({
+                        "status": "success",
+                        "type": "transcription",
+                        "text": text,
+                    })
+            except Exception as e:
+                logger.error(f"Ошибка при распознавании речи: {str(e)}")
+                await websocket.send_json({
+                    "status": "error",
+                    "type": "transcription",
+                    "error": str(e)
+                })
             
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Клиент {client_id}: ошибка при обработке данных - {str(e)}")
     finally:
+        logger.info(f"Клиент {client_id}: соединение закрыто")
         await websocket.close()
 
 @app.get("/")
